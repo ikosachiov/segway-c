@@ -16,15 +16,14 @@ const float MAX_STEPS_PER_SEC = 2500.0;
 const float MIN_STEP_INTERVAL_US = 1000000.0 / MAX_STEPS_PER_SEC;
 
 // REDUCED PID constants for less aggressive balancing
-float Kp = 0.15;   // Reduced from 30
-float Ki = 0.25;   // Reduced from 0.5
-float Kd = 0.25;   // Increased for better damping
+float Kp = 0.05;   // Reduced from 30
+float Ki = 0.02;   // Reduced from 0.5
+float Kd = 0.001;   // Increased for better damping
 
 // PID variables
 float setpoint = 0.0;
 float integral = 0.0;
 float previous_error = 0.0;
-float lastRawAngle = 0.0;
 unsigned long lastLoopTime = 0;
 
 //
@@ -124,15 +123,20 @@ void doOneStepOrNone(float speed) {
         integral += error * dt;
         integral = constrain(integral, -1.0, 1.0);
         
-        // Derivative (using actual gyro rate for smoother response)
-        float derivative = -gyroRate;
-        
         // Calculate output
-        float output = (Kp * error) + (Ki * integral) + (Kd * derivative);
+        float output = (Kp * error) + (Ki * integral) + Kd * ((error - previous_error) / dt);
+
+        if (millis() % 500 == 0) { 
+            char buffer[256];            
+            snprintf(buffer, 256, "Kp*e:%.4f, Ki*i:%.4f, Kd*de/dt:%.8f", (Kp * error), (Ki * integral), Kd * ((error - previous_error) / dt));
+            Serial.printf("%s\n", buffer);
+            udp.broadcast(buffer);
+        }
         
         // Limit output to prevent saturation
         output = constrain(output, -0.99, 0.99);  // Reduced max speed
         
+        previous_error = error;
         return output;
     }
 
@@ -149,9 +153,7 @@ void taskBalancing(void *pvParameters) {
     
     // UDP setup
     udp.listen(8888);
-    
-    unsigned long lastPrintTime = 0;
-    
+      
     Serial.println("Balancing Active! Hold robot upright to test...\n");
     
     for(;;) {
@@ -165,12 +167,10 @@ void taskBalancing(void *pvParameters) {
         doOneStepOrNone(motorSpeed);
         
         // Print debug info
-        unsigned long now = millis();
         
-        if (now - lastPrintTime >= 200) {  // 20Hz update
-            lastPrintTime = now;
+        if (millis() % 500 == 0) {
             char buffer[256];            
-            snprintf(buffer, 256, "Angle:%.3f, Gyro:%.3f, Motor:%.3f", angle, gyroRate, motorSpeed);
+            snprintf(buffer, 256, "Angle:%.4f, Gyro:%.4f, Motor:%.4f", angle, gyroRate, motorSpeed);
             Serial.printf("%s\n", buffer);
             udp.broadcast(buffer);
         }
