@@ -16,9 +16,9 @@ const float MAX_STEPS_PER_SEC = 2500.0;
 const float MIN_STEP_INTERVAL_US = 1000000.0 / MAX_STEPS_PER_SEC;
 
 // REDUCED PID constants for less aggressive balancing
-float Kp = 0.08;   // Reduced from 30
-float Kd = 0.01;   // Increased for better damping
-float Ki = 0.02;   // Reduced from 0.5
+float Kp = 0.15;   // Reduced from 30
+float Ki = 0.25;   // Reduced from 0.5
+float Kd = 0.25;   // Increased for better damping
 
 // PID variables
 float setpoint = 0.0;
@@ -91,7 +91,7 @@ void doOneStepOrNone(float speed) {
         }
         
         // Apply gyro offset
-        gyroRate = g.gyro.y - gyro_offset;
+        gyroRate = - g.gyro.y - gyro_offset;
         
         // Calculate angle from accelerometer
         float accelAngle = atan2(a.acceleration.x, a.acceleration.z) * 180.0 / PI;
