@@ -125,7 +125,7 @@ void doOneStepOrNone(float speed) {
         integral = constrain(integral, -1.0, 1.0);
         
         // Derivative (using actual gyro rate for smoother response)
-        float derivative = -gyroRate;  // Negative because gyro gives rate of change
+        float derivative = -gyroRate;
         
         // Calculate output
         float output = (Kp * error) + (Ki * integral) + (Kd * derivative);
