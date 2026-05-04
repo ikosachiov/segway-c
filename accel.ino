@@ -11,8 +11,8 @@
 Adafruit_MPU6050 mpu;
 
 // Calibration variables
-float angle_offset = 0.0;
-float gyro_offset = 0.0;
+double angle_offset = 0.0;
+double gyro_offset = 0.0;
 bool calibrated = false;
 
 // Queue handle
@@ -21,9 +21,9 @@ const int QUEUE_SIZE = 10;  // Store up to 10 readings
 
 // Structure to hold all sensor data
 typedef struct {
-  float accelX, accelY, accelZ;
-  float gyroX, gyroY, gyroZ;
-  float temperature;
+  double accelX, accelY, accelZ;
+  double gyroX, gyroY, gyroZ;
+  double temperature;
   unsigned long timestamp;
 } SensorData;
 
@@ -50,8 +50,8 @@ void calibrateMPU() {
     
     // Calibrate
    
-    float sum_angle = 0.0;
-    float sum_gyro = 0.0;
+    double sum_angle = 0.0;
+    double sum_gyro = 0.0;
     const int samples = 200;
     
     for (int i = 0; i < samples; i++) {
@@ -59,7 +59,7 @@ void calibrateMPU() {
         mpu.getEvent(&a, &g, &temp);
         
         // Calculate angle from accelerometer
-        float angle = atan2(a.acceleration.x, a.acceleration.z) * 180.0 / PI;
+        double angle = atan2(a.acceleration.x, a.acceleration.z) * 180.0 / PI;
         sum_angle += angle;
         sum_gyro += g.gyro.y;
         

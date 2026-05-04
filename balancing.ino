@@ -12,26 +12,26 @@ AsyncUDP udp;
 
 unsigned long lastStepTime = 0;
 
-const float MAX_STEPS_PER_SEC = 2500.0;
-const float MIN_STEP_INTERVAL_US = 1000000.0 / MAX_STEPS_PER_SEC;
+const double MAX_STEPS_PER_SEC = 2500.0;
+const double MIN_STEP_INTERVAL_US = 1000000.0 / MAX_STEPS_PER_SEC;
 
 // REDUCED PID constants for less aggressive balancing
-float Kp = 0.05;   // Reduced from 30
-float Ki = 0.02;   // Reduced from 0.5
-float Kd = 0.001;   // Increased for better damping
+double Kp = 0.09;   // Reduced from 30
+double Ki = 0.02;   // Reduced from 0.5
+double Kd = 0.1;   // Increased for better damping
 
 // PID variables
-float setpoint = 0.0;
-float integral = 0.0;
-float previous_error = 0.0;
+double setpoint = 0.0;
+double integral = 0.0;
+double previous_error = 0.0;
 unsigned long lastLoopTime = 0;
 
 //
-float lastFilteredAngle = 0.0;
+double lastFilteredAngle = 0.0;
 
 // Complementary filter
-float filteredAngle = 0.0;
-float gyroRate = 0.0;
+double filteredAngle = 0.0;
+double gyroRate = 0.0;
 unsigned long lastTimestamp = 0;
 
 void setupBalancing() {
@@ -44,7 +44,7 @@ void setupBalancing() {
     digitalWrite(STEP1, LOW);
 }
 
-void doOneStepOrNone(float speed) {
+void doOneStepOrNone(double speed) {
     if (fabs(speed) < 0.005) return;  // Dead zone to prevent jitter
     
     // Set direction
@@ -53,7 +53,7 @@ void doOneStepOrNone(float speed) {
     digitalWrite(DIR0, speed > 0 ? HIGH : LOW);    
     
     // Convert speed to step interval
-    float absSpeed = constrain(fabs(speed), 0.05, 0.95);  // Min 0.05 to prevent too slow
+    double absSpeed = constrain(fabs(speed), 0.05, 0.95);  // Min 0.05 to prevent too slow
     
     // Speed 0.95 = ~2375 steps/sec = 420us interval
     // Speed 0.05 = 125 steps/sec = 8000us interval
@@ -72,7 +72,7 @@ void doOneStepOrNone(float speed) {
     }
 }
 
-    float getAngle() {
+    double getAngle() {
         SensorData receivedData;
         sensors_event_t a, g, temp;
 
@@ -93,38 +93,38 @@ void doOneStepOrNone(float speed) {
         gyroRate = - g.gyro.y - gyro_offset;
         
         // Calculate angle from accelerometer
-        float accelAngle = atan2(a.acceleration.x, a.acceleration.z) * 180.0 / PI;
+        double accelAngle = atan2(a.acceleration.x, a.acceleration.z) * 180.0 / PI;
         
         // Apply angle offset (so 0 degrees = upright)
         accelAngle -= angle_offset;
         
         // Time delta for gyro integration
         unsigned long now = micros();
-        float dt = (now - lastTimestamp) / 1000000.0;
+        double dt = (now - lastTimestamp) / 1000000.0;
         lastTimestamp = now;
         
         // Complementary filter (adjustable)
-        float filterCoeff = 0.96;  // 96% gyro, 4% accelerometer
+        double filterCoeff = 0.96;  // 96% gyro, 4% accelerometer
         filteredAngle = filterCoeff * (filteredAngle + gyroRate * dt) + (1.0 - filterCoeff) * accelAngle;
         
         lastFilteredAngle = filteredAngle;
         return filteredAngle;
     }
 
-    float computePID(float currentAngle) {
+    double computePID(double currentAngle) {
         unsigned long now = micros();
-        float dt = (now - lastLoopTime) / 1000000.0;
+        double dt = (now - lastLoopTime) / 1000000.0;
         lastLoopTime = now;
         
         // Calculate error
-        float error = setpoint - currentAngle;
+        double error = setpoint - currentAngle;
         
         // Integral with anti-windup (limit to smaller range)
         integral += error * dt;
         integral = constrain(integral, -1.0, 1.0);
         
         // Calculate output
-        float output = (Kp * error) + (Ki * integral) + Kd * ((error - previous_error) / dt);
+        double output = (Kp * error) + (Ki * integral) + Kd * ((error - previous_error) / dt);
 
         if (millis() % 500 == 0) { 
             char buffer[256];            
@@ -158,10 +158,10 @@ void taskBalancing(void *pvParameters) {
     
     for(;;) {
         // Get angle
-        float angle = getAngle();
+        double angle = getAngle();
         
         // Compute motor speed
-        float motorSpeed = computePID(angle);
+        double motorSpeed = computePID(angle);
         
         // Apply to motors
         doOneStepOrNone(motorSpeed);
