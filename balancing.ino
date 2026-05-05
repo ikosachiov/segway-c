@@ -16,9 +16,9 @@ const double MAX_STEPS_PER_SEC = 2500.0;
 const double MIN_STEP_INTERVAL_US = 1000000.0 / MAX_STEPS_PER_SEC;
 
 // REDUCED PID constants for less aggressive balancing
-double Kp = 0.09;   // Reduced from 30
-double Ki = 0.02;   // Reduced from 0.5
-double Kd = 0.1;   // Increased for better damping
+double Kp = 0.040;   // Reduced from 30
+double Ki = 0.075;   // Reduced from 0.5
+double Kd = 0.00000005;   // Increased for better damping
 
 // PID variables
 double setpoint = 0.0;
@@ -121,7 +121,7 @@ void doOneStepOrNone(double speed) {
         
         // Integral with anti-windup (limit to smaller range)
         integral += error * dt;
-        integral = constrain(integral, -1.0, 1.0);
+        integral = constrain(integral, -0.5, 0.5);
         
         // Calculate output
         double output = (Kp * error) + (Ki * integral) + Kd * ((error - previous_error) / dt);
