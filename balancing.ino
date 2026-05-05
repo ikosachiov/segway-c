@@ -16,9 +16,9 @@ const double MAX_STEPS_PER_SEC = 2500.0;
 const double MIN_STEP_INTERVAL_US = 1000000.0 / MAX_STEPS_PER_SEC;
 
 // REDUCED PID constants for less aggressive balancing
-double Kp = 0.08;
+double Kp = 0.20;
 double Ki = 0.00;
-double Kd = 0.18;
+double Kd = 0.04;
 
 // PID variables
 double setpoint = 0.0;
@@ -71,41 +71,32 @@ void doOneStepOrNone(double speed) {
 
 double getAngle() {
     SensorData receivedData;
-    sensors_event_t a, g, temp;
 
+    // Check the queue for new data
     if (xQueueReceive(sensorQueue, &receivedData, 0)) {
-    temp.temperature = receivedData.temperature;
-    a.acceleration.x = receivedData.accelX;
-    a.acceleration.y = receivedData.accelY;
-    a.acceleration.z = receivedData.accelZ;
-    g.gyro.x = receivedData.gyroX;
-    g.gyro.y = receivedData.gyroY;
-    g.gyro.z = receivedData.gyroZ;
+        // Use the raw data directly from the struct
+        // No need for a, g, or temp variables anymore
+        
+        // 1. Apply gyro offset
+        gyroRate = -receivedData.gyroY - gyro_offset;
+        
+        // 2. Calculate angle from accelerometer
+        double accelAngle = atan2(receivedData.accelX, receivedData.accelZ) * 180.0 / PI;
+        accelAngle -= angle_offset;
+        
+        // 3. Time delta for integration
+        unsigned long now = micros();
+        double dt = (now - lastTimestamp) / 1000000.0;
+        lastTimestamp = now;
+        
+        // 4. Complementary filter
+        double filterCoeff = 0.98; // Trust gyro more now that it's faster
+        filteredAngle = filterCoeff * (filteredAngle + gyroRate * dt) + (1.0 - filterCoeff) * accelAngle;
+        
+        lastFilteredAngle = filteredAngle;
     }
-    else {
-        return lastFilteredAngle;
-    }
     
-    // Apply gyro offset
-    gyroRate = - g.gyro.y - gyro_offset;
-    
-    // Calculate angle from accelerometer
-    double accelAngle = atan2(a.acceleration.x, a.acceleration.z) * 180.0 / PI;
-    
-    // Apply angle offset (so 0 degrees = upright)
-    accelAngle -= angle_offset;
-    
-    // Time delta for gyro integration
-    unsigned long now = micros();
-    double dt = (now - lastTimestamp) / 1000000.0;
-    lastTimestamp = now;
-    
-    // Complementary filter (adjustable)
-    double filterCoeff = 0.96;  // 96% gyro, 4% accelerometer
-    filteredAngle = filterCoeff * (filteredAngle + gyroRate * dt) + (1.0 - filterCoeff) * accelAngle;
-    
-    lastFilteredAngle = filteredAngle;
-    return filteredAngle;
+    return lastFilteredAngle;
 }
 
 double computePID(double currentAngle) {
