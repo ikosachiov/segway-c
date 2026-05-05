@@ -17,7 +17,7 @@ bool calibrated = false;
 
 // Queue handle
 QueueHandle_t sensorQueue;
-const int QUEUE_SIZE = 10;  // Store up to 10 readings
+const int QUEUE_SIZE = 2;  // Store up to 10 readings
 
 // Structure to hold all sensor data
 typedef struct {
@@ -38,6 +38,7 @@ void calibrateMPU() {
     Serial.println("Calibrating in 3 seconds...");
 
     Wire.begin(21, 22);
+    Wire.setClock(400000);
     if (!mpu.begin()) {
         Serial.println("MPU6050 not found!");
         while(1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
@@ -45,7 +46,7 @@ void calibrateMPU() {
     
     mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
     mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-    mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+    mpu.setFilterBandwidth(MPU6050_BAND_260_HZ);
     Serial.println("MPU6050 Ready!");
     
     // Calibrate
