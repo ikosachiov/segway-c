@@ -27,7 +27,7 @@ double previous_error = 0.0;
 unsigned long lastLoopTime = 0;
 
 //
-double lastFilteredAngle = 0.0;
+double lastAngle = 0.0;
 
 // Complementary filter
 double filteredAngle = 0.0;
@@ -45,7 +45,7 @@ void setupBalancing() {
 }
 
 void doOneStepOrNone(double speed) {
-    if (fabs(speed) < 0.04) return;  // Dead zone to prevent jitter
+    if (fabs(speed) < 0.075) return;  // Dead zone to prevent jitter
     
     // Set direction
     
@@ -93,10 +93,9 @@ double getAngle() {
         double filterCoeff = 0.98; // Trust gyro more now that it's faster
         filteredAngle = filterCoeff * (filteredAngle + gyroRate * dt) + (1.0 - filterCoeff) * accelAngle;
         
-        lastFilteredAngle = filteredAngle;
     }
     
-    return lastFilteredAngle;
+    return filteredAngle;
 }
 
 double computePID(double currentAngle) {
@@ -135,11 +134,9 @@ void taskBalancing(void *pvParameters) {
     vTaskDelay(pdMS_TO_TICKS(500));
     
     // Reset PID
-    integral = 0.0;
-    previous_error = 0.0;
-    filteredAngle = 0.0;
     lastLoopTime = micros();
     lastTimestamp = micros();
+    double motorSpeed = 0.0;
     
     // UDP setup
     udp.listen(8888);
@@ -149,9 +146,10 @@ void taskBalancing(void *pvParameters) {
     for(;;) {
         // Get angle
         double angle = getAngle();
-        
-        // Compute motor speed
-        double motorSpeed = computePID(angle);
+        if (abs(angle - lastAngle) > 0.01) {
+            motorSpeed = computePID(angle);
+        }
+        lastAngle = angle;
         
         // Apply to motors
         doOneStepOrNone(motorSpeed);
