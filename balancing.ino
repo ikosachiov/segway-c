@@ -1,167 +1,303 @@
-// Add these includes at the VERY TOP of your file (before anything else)
+/**
+ * @author Sergey Royz (zjor.se@gmail.com) 
+ * @version 0.3 (MPU6050 gravity & scaling fix)
+ * @date 2026-05-11
+ */
+
+// The MPU 6050 is positioned so that the X-axis is directed backward,
+// the Y-axis is directed to the right, and the Z-axis is directed upward.
+// The positive direction of rotation along the axes is clockwise.
+
+#include <Arduino.h>
 #include <Wire.h>
-#include <AsyncUDP.h>
+#include <MPU6050_6Axis_MotionApps20.h>
 
-AsyncUDP udp;
+#include "pid.h"
+#include "stepper.h"
+
+#define PIN_IMU_SCL 22
+#define PIN_IMU_SDA 21
+#define PIN_IMU_INT 23
+
+#define PIN_MOTOR_RIGHT_EN    0 // always en
+#define PIN_MOTOR_RIGHT_DIR   33
+#define PIN_MOTOR_RIGHT_STEP  25
+
+#define PIN_MOTOR_LEFT_EN    0 // always en
+#define PIN_MOTOR_LEFT_DIR   27
+#define PIN_MOTOR_LEFT_STEP  26
+
+#define PPR       1600
+
+#define CPU_FREQ_MHZ  240
+#define CPU_FREQ_DIVIDER  120
+#define TICKS_PER_SECOND (200000 * (CPU_FREQ_MHZ / CPU_FREQ_DIVIDER))
+#define PULSE_WIDTH      1
+
+#define MAX_ACCEL (200)
+#define ANGLE_Kp  800.0
+#define ANGLE_Kd  60.0 
+#define ANGLE_Ki  0.0
+
+#define VELOCITY_Kp  0.0005
+#define VELOCITY_Kd  0.000005
+#define VELOCITY_Ki  0.000002
 
 
-#define STEP0 25
-#define DIR0  33
-#define STEP1 26
-#define DIR1  27
+#define WARMUP_DELAY_US (7000000UL)
+#define ANGLE_SET_POINT -0.08
 
-unsigned long lastStepTime = 0;
+#define LOG_IMU
+#define LOG_ENABLED
+#define LOG_MS 250
 
-const double MAX_STEPS_PER_SEC = 2500.0;
-const double MIN_STEP_INTERVAL_US = 1000000.0 / MAX_STEPS_PER_SEC;
+void initTimerInterrupt();
+float normalizeAngle(float);
+void updateVelocity(unsigned long);
+void updateControl(unsigned long);
+void log(unsigned long);
 
-// REDUCED PID constants for less aggressive balancing
-double Kp = 0.20;
-double Ki = 0.00;
-double Kd = 0.04;
+Stepper leftStepper(PIN_MOTOR_LEFT_EN, PIN_MOTOR_LEFT_DIR, PIN_MOTOR_LEFT_STEP, TICKS_PER_SECOND, PPR, PULSE_WIDTH);
+Stepper rightStepper(PIN_MOTOR_RIGHT_EN, PIN_MOTOR_RIGHT_DIR, PIN_MOTOR_RIGHT_STEP, TICKS_PER_SECOND, PPR, PULSE_WIDTH);
 
-// PID variables
-double setpoint = 0.0;
-double integral = 0.0;
-double previous_error = 0.0;
-unsigned long lastLoopTime = 0;
+// MPU6050 objects
+MPU6050 mpu;
+volatile bool dmpDataReady = false;
+uint8_t devStatus;           
+uint8_t fifoBuffer[64];            
+float roll, pitch, yaw;
 
-//
-double lastAngle = 0.0;
+// DMP specific variables
+Quaternion q;           // [w, x, y, z]         quaternion container
+VectorFloat gravity;    // [x, y, z]            gravity vector
+float ypr[3];           // [yaw, pitch, roll]   Yaw/Pitch/Roll container
 
-// Complementary filter
-double filteredAngle = 0.0;
-double gyroRate = 0.0;
-unsigned long lastTimestamp = 0;
-
-void setupBalancing() {
-    pinMode(STEP0, OUTPUT);
-    pinMode(DIR0, OUTPUT);
-    pinMode(STEP1, OUTPUT);
-    pinMode(DIR1, OUTPUT);
-    
-    digitalWrite(STEP0, LOW);
-    digitalWrite(STEP1, LOW);
+void dmpISR() {
+  dmpDataReady = true;
 }
 
-void doOneStepOrNone(double speed) {
-    if (fabs(speed) < 0.075) return;  // Dead zone to prevent jitter
-    
-    // Set direction
-    
-    digitalWrite(DIR1, speed > 0 ? HIGH : LOW);
-    digitalWrite(DIR0, speed > 0 ? HIGH : LOW);    
-    
-    // Speed 0.95 = ~2375 steps/sec = 420us interval
-    // Speed 0.05 = 125 steps/sec = 8000us interval
-    unsigned long stepIntervalUs = (unsigned long)(MIN_STEP_INTERVAL_US / abs(speed));
-    
-    unsigned long now = micros();
+void initIMU() {
+  pinMode(PIN_IMU_INT, INPUT_PULLUP);
+  Wire.begin();
+  Wire.setClock(400000);
 
-    if (now - lastStepTime >= stepIntervalUs) {
-        digitalWrite(STEP1, HIGH);        
-        digitalWrite(STEP0, HIGH);        
-        delayMicroseconds(10);
-        digitalWrite(STEP1, LOW);                
-        digitalWrite(STEP0, LOW);
-        delayMicroseconds(10);
-        lastStepTime = now;
+  mpu.initialize();
+  if (!mpu.testConnection()) {
+    while (1) {
+      Serial.println("MPU6050 connection failed");
+      delay(5000);
     }
+  }
+
+  devStatus = mpu.dmpInitialize();
+  if (devStatus != 0) {
+    while (1) {
+      Serial.print("DMP Initialization failed (code ");
+      Serial.print(devStatus);
+      Serial.println(")");
+      delay(5000);
+    }
+  }
+
+  mpu.setDMPEnabled(true);
+  attachInterrupt(digitalPinToInterrupt(PIN_IMU_INT), dmpISR, RISING);
+  mpu.setIntEnabled(true);
 }
 
-double getAngle() {
-    SensorData receivedData;
+bool readIMU() {
+  if (dmpDataReady) {
+    dmpDataReady = false;
 
-    // Check the queue for new data
-    if (xQueueReceive(sensorQueue, &receivedData, 0)) {
-        // Use the raw data directly from the struct
-        // No need for a, g, or temp variables anymore
-        
-        // 1. Apply gyro offset
-        gyroRate = -receivedData.gyroY - gyro_offset;
-        
-        // 2. Calculate angle from accelerometer
-        double accelAngle = atan2(receivedData.accelX, receivedData.accelZ) * 180.0 / PI;
-        accelAngle -= angle_offset;
-        
-        // 3. Time delta for integration
-        unsigned long now = micros();
-        double dt = (now - lastTimestamp) / 1000000.0;
-        lastTimestamp = now;
-        
-        // 4. Complementary filter
-        double filterCoeff = 0.98; // Trust gyro more now that it's faster
-        filteredAngle = filterCoeff * (filteredAngle + gyroRate * dt) + (1.0 - filterCoeff) * accelAngle;
-        
+    if (mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) {
+      mpu.dmpGetQuaternion(&q, fifoBuffer);
+      mpu.dmpGetGravity(&gravity, &q);
+      mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
+      
+      yaw   = ypr[0];
+      pitch = ypr[1];
+      roll  = ypr[2];
+      return true;
     }
-    
-    return filteredAngle;
+  }
+  return false;
 }
 
-double computePID(double currentAngle) {
-    unsigned long now = micros();
-    double dt = (now - lastLoopTime) / 1000000.0;
-    lastLoopTime = now;
-    
-    // Calculate error
-    double error = setpoint - currentAngle;
-    
-    // Integral with anti-windup (limit to smaller range)
-    integral += error * dt;
-    integral = constrain(integral, -1.0, 1.0);
-    
-    // Calculate output
-    // double output = (Kp * error) + (Ki * integral) + Kd * ((error - previous_error) / dt);
-    double output = (Kp * error) + (Ki * integral) + Kd * (-gyroRate);
+void logIMU() {
+  #ifdef LOG_IMU
+  static unsigned long lastTimestamp = millis();
+  unsigned long now = millis();
+  if (now - lastTimestamp > LOG_MS) {
+    // Serial.print("p:"); 
+    // Serial.println(pitch);    
+    lastTimestamp = now;
+  }
+  #endif
+}
 
-    if (millis() % 100 == 0) { 
-        char buffer[256];            
-        // snprintf(buffer, 256, "Kp*e:%.4f, Ki*i:%.4f, Kd*de/dt:%.8f", (Kp * error), (Ki * integral), Kd * ((error - previous_error) / dt));
-        snprintf(buffer, 256, "Kp*e:%.4f, Ki*i:%.4f, Kd*(-gR):%.8f", (Kp * error), (Ki * integral), Kd * (-gyroRate));
-        Serial.printf("%s\n", buffer);
-        udp.broadcast(buffer);
-    }
-    
-    // Limit output to prevent saturation
-    output = constrain(output, -0.99, 0.99);  // Reduced max speed
-    
-    previous_error = error;
-    return output;
+PID anglePID(ANGLE_Kp, ANGLE_Kd, ANGLE_Ki, ANGLE_SET_POINT);
+PID velocityPID(VELOCITY_Kp, VELOCITY_Kd, VELOCITY_Ki, 0.0);
+bool isBalancing = false;
+
+float accel = 0.0f;
+float velocity = 0.0f; 
+float angle = 0.0f;
+float targetAngle = ANGLE_SET_POINT;
+
+hw_timer_t * timer = NULL;
+
+void IRAM_ATTR onTimer() {
+  leftStepper.tick();
+  rightStepper.tick();
+}
+
+float normalizeAngle(float value) { 
+  // DMP output via dmpGetYawPitchRoll is already in Radians (-PI to PI)
+  return value;
+}
+
+void setupBalancing(void) {
+  setCpuFrequencyMhz(CPU_FREQ_MHZ);
+
+  Serial.begin(115200);
+  Wire.begin();
+  Wire.setClock(1000000UL);
+
+  Serial.println("Start");
+  initTimerInterrupt();
+  initIMU();
+
+  leftStepper.init();
+  rightStepper.init();
+  leftStepper.setEnabled(true);
+  rightStepper.setEnabled(true);
+}
+
+void initTimerInterrupt() {
+  timer = timerBegin(666667);                
+  timerAttachInterrupt(timer, &onTimer);
+  timerAlarm(timer, 5, true, 0);             
+  timerStart(timer);
+}
+
+void updateVelocity(unsigned long nowMicros) {
+  static unsigned long timestamp = micros();
+  if (nowMicros - timestamp < 50) {
+    return;
+  }
+
+  float dt = ((float) (nowMicros - timestamp)) * 1e-6;
+  velocity += accel * dt;
+
+  // Drive both wheels together to move straight in response to the lean
+  leftStepper.setVelocity(-velocity);
+  rightStepper.setVelocity(velocity); 
+  
+  timestamp = nowMicros;
+}
+
+void setBalancing(bool balancing) {
+  if (isBalancing != balancing) {
+    isBalancing = balancing;
+    #ifdef LOG_ENABLED
+    Serial.print("IsBalancing: ");
+    Serial.println(isBalancing);
+    #endif
+  }  
+}
+
+void setIMUWarmUpElapsed() {
+  static bool invoked = false;
+  if (!invoked) {
+    invoked = true;
+    #ifdef LOG_ENABLED
+    Serial.println("IMU Warm Up timeout elapsed");
+    #endif
+  }
+}
+
+void updateControl(unsigned long nowMicros) {
+  static unsigned long timestamp = micros();
+  if (nowMicros - timestamp < 1000) {
+    return;
+  }
+
+  if (!readIMU()) {
+    return;
+  }
+
+  if (nowMicros < WARMUP_DELAY_US) {    
+    // Keeping system components completely cleared during filter stabilization
+    accel = 0.0f;
+    velocity = 0.0f;
+    leftStepper.setVelocity(0.0f);
+    rightStepper.setVelocity(0.0f);
+    return;
+  } 
+  setIMUWarmUpElapsed();
+
+  angle = normalizeAngle(pitch);
+  float dt = ((float) (nowMicros - timestamp)) * 1e-6;
+
+  if (abs(angle - targetAngle) < PI / 18) {
+    setBalancing(true);
+  }
+
+  if (abs(angle - targetAngle) > PI / 4) {
+    setBalancing(false);
+    accel = 0.0f;
+    velocity = 0.0f;    
+  }
+
+  if (!isBalancing) {
+    return;
+  }
+  
+  targetAngle = ANGLE_SET_POINT + velocityPID.getControl(velocity, dt);
+  anglePID.setTarget(targetAngle);
+  // anglePID.setTarget(ANGLE_SET_POINT);
+
+  accel = -anglePID.getControl(angle, dt);
+  accel = constrain(accel, -MAX_ACCEL, MAX_ACCEL);
+
+  timestamp = nowMicros;
+}
+
+void log(unsigned long nowMicros) {  
+  static unsigned long timestamp = micros();  
+  if (nowMicros - timestamp < 100000) {
+    return;
+  }
+  Serial.print("yaw:");     Serial.print(yaw, 2);
+  Serial.print("\tpitch:");   Serial.print(pitch, 2);
+  Serial.print("\troll:");    Serial.print(roll, 2);
+
+  Serial.print("\ta0:");     Serial.print(targetAngle, 4);
+  Serial.print("\ta:");    Serial.print(angle, 4);
+  Serial.print("\tv:");    Serial.print(velocity, 4);
+  Serial.print("\tu:");    Serial.println(accel, 4);  
+  timestamp = nowMicros;   
 }
 
 void taskBalancing(void *pvParameters) {
-
     vTaskDelay(pdMS_TO_TICKS(500));
+    setupBalancing();
     
-    // Reset PID
-    lastLoopTime = micros();
-    lastTimestamp = micros();
-    double motorSpeed = 0.0;
-    
-    // UDP setup
-    udp.listen(8888);
-      
-    Serial.println("Balancing Active! Hold robot upright to test...\n");
+    // Track execution rate to prevent background starvation
+    TickType_t xLastWakeTime = xTaskGetTickCount();
     
     for(;;) {
-        // Get angle
-        double angle = getAngle();
-        if (abs(angle - lastAngle) > 0.01) {
-            motorSpeed = computePID(angle);
-        }
-        lastAngle = angle;
+        unsigned long nowMicros = micros();
         
-        // Apply to motors
-        doOneStepOrNone(motorSpeed);
+        updateVelocity(nowMicros);
+        updateControl(nowMicros);
+        logIMU();
         
-        // Print debug info
-        
-        if (millis() % 100 == 0) {
-            char buffer[256];            
-            snprintf(buffer, 256, "Angle:%.4f, Gyro:%.4f, Motor:%.4f", angle, gyroRate, motorSpeed);
-            Serial.printf("%s\n", buffer);
-            udp.broadcast(buffer);
-        }
-        
+        #ifdef LOG_ENABLED
+        log(nowMicros);
+        #endif
+
+        // Yield execution to other tasks for exactly 1 FreeRTOS tick (typically 1ms)
+        // This stops the ESP32 Watchdog Timer from triggering a crash.
+        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(1));
     }
 }

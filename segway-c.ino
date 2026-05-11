@@ -149,19 +149,13 @@ void setup() {
   webServerInit();
   tkSecond.attach(1, everySecond);
   ////
-  setupAccel();  
-  setupBalancing();
-  ////
   pinMode(LED_BUILTIN, OUTPUT);
   ////
   xTaskCreatePinnedToCore(taskLine, "Line", 4096, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(taskGrab, "Grab", 4096, NULL, 1, NULL, 0);
-  xTaskCreatePinnedToCore(taskAccel, "Accel", 4096, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(taskServer, "Server", 4096, NULL, 1, NULL, 0); // debug only
   //
-  xTaskCreatePinnedToCore(taskBalancing, "Balancing", 8192, NULL, 1, NULL, 1);  
-
-
+  xTaskCreatePinnedToCore(taskBalancing, "Balancing", 8192, NULL, 3, NULL, 1);  
 }
 
 void loop() {
