@@ -1,6 +1,6 @@
 /**
  * @author Sergey Royz (zjor.se@gmail.com) 
- * @version 0.3 (MPU6050 gravity & scaling fix)
+ * @version 0.3 (MPU6050 gravity & scaling fix) + Position Control
  * @date 2026-05-11
  */
 
@@ -39,10 +39,17 @@
 #define ANGLE_Kd  60.0 
 #define ANGLE_Ki  0.0
 
-#define VELOCITY_Kp  0.0005
-#define VELOCITY_Kd  0.000005
-#define VELOCITY_Ki  0.000002
+#define VELOCITY_Kp  0.001
+#define VELOCITY_Kd  0.00001
+#define VELOCITY_Ki  0.000004
 
+// --- КОНТРОЛЬ ПОЗИЦИИ ---
+#define POSITION_Kp  1.0  // Коэффициент удержания пути
+
+float position = 0.0f;           // Текущий пройденный путь 
+float targetPosition = 0.0f;     // Целевой путь
+float userTargetVelocity = 10.0f; // ЗАДАВАЙ СЮДА СКОРОСТЬ (0.0 - стоять на месте)
+// ------------------------
 
 #define WARMUP_DELAY_US (7000000UL)
 #define ANGLE_SET_POINT -0.08
@@ -128,7 +135,7 @@ void logIMU() {
   unsigned long now = millis();
   if (now - lastTimestamp > LOG_MS) {
     // Serial.print("p:"); 
-    // Serial.println(pitch);    
+    // Serial.println(pitch);   
     lastTimestamp = now;
   }
   #endif
@@ -188,6 +195,10 @@ void updateVelocity(unsigned long nowMicros) {
   float dt = ((float) (nowMicros - timestamp)) * 1e-6;
   velocity += accel * dt;
 
+  // Интегрируем путь для контроля позиции
+  position += velocity * dt;                  
+  targetPosition += userTargetVelocity * dt;  
+
   // Drive both wheels together to move straight in response to the lean
   leftStepper.setVelocity(-velocity);
   rightStepper.setVelocity(velocity); 
@@ -229,6 +240,8 @@ void updateControl(unsigned long nowMicros) {
     // Keeping system components completely cleared during filter stabilization
     accel = 0.0f;
     velocity = 0.0f;
+    position = 0.0f;       // Сброс позиции при прогреве
+    targetPosition = 0.0f; // Сброс цели при прогреве
     leftStepper.setVelocity(0.0f);
     rightStepper.setVelocity(0.0f);
     return;
@@ -246,15 +259,22 @@ void updateControl(unsigned long nowMicros) {
     setBalancing(false);
     accel = 0.0f;
     velocity = 0.0f;    
+    position = 0.0f;       // Сброс позиции при падении
+    targetPosition = 0.0f; // Сброс цели при падении
   }
 
   if (!isBalancing) {
     return;
   }
   
+  // Вычисляем требуемую скорость для удержания/достижения позиции
+  float posError = targetPosition - position; 
+  float requiredVelocity = userTargetVelocity + (posError * POSITION_Kp);
+  
+  velocityPID.setTarget(requiredVelocity); 
+
   targetAngle = ANGLE_SET_POINT + velocityPID.getControl(velocity, dt);
   anglePID.setTarget(targetAngle);
-  // anglePID.setTarget(ANGLE_SET_POINT);
 
   accel = -anglePID.getControl(angle, dt);
   accel = constrain(accel, -MAX_ACCEL, MAX_ACCEL);

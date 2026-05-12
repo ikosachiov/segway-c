@@ -18,25 +18,28 @@ void setupGrab() {
 void taskGrab(void *pvParameters) {
   vTaskDelay(pdMS_TO_TICKS(500));
   setupGrab();
+
+  for (int angle = 0; angle <= 180; angle += 1) {
+    int dutyCycle = map(angle, 0, 180, minDuty, maxDuty);
+    // In Core 3.0+, ledcWrite directly takes the PIN, not the channel
+    ledcWrite(servoPin, dutyCycle);
+    vTaskDelay(pdMS_TO_TICKS(2));
+  }
+  
+  // Sweep from 180 to 0 degrees
+  for (int angle = 180; angle >= 0; angle -= 1) {
+    int dutyCycle = map(angle, 0, 180, minDuty, maxDuty);
+    ledcWrite(servoPin, dutyCycle);
+    vTaskDelay(pdMS_TO_TICKS(2));
+  }
+
+  
   for (;;) {
     digitalWrite(LED_BUILTIN, HIGH);  // change state of the LED by setting the pin to the HIGH voltage level
     vTaskDelay(pdMS_TO_TICKS(300));                      // wait for a second
     digitalWrite(LED_BUILTIN, LOW);   // change state of the LED by setting the pin to the LOW voltage level
     vTaskDelay(pdMS_TO_TICKS(300)); 
-    
-    for (int angle = 0; angle <= 180; angle += 1) {
-      int dutyCycle = map(angle, 0, 180, minDuty, maxDuty);
-      // In Core 3.0+, ledcWrite directly takes the PIN, not the channel
-      ledcWrite(servoPin, dutyCycle);
-      vTaskDelay(pdMS_TO_TICKS(2));
-    }
-    
-    // Sweep from 180 to 0 degrees
-    for (int angle = 180; angle >= 0; angle -= 1) {
-      int dutyCycle = map(angle, 0, 180, minDuty, maxDuty);
-      ledcWrite(servoPin, dutyCycle);
-      vTaskDelay(pdMS_TO_TICKS(2));
-    }
+
 
   }
 }
