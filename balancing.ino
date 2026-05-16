@@ -48,7 +48,7 @@
 
 float position = 0.0f;           // Текущий пройденный путь 
 float targetPosition = 0.0f;     // Целевой путь
-float userTargetVelocity = 20.0f; // ЗАДАВАЙ СЮДА СКОРОСТЬ (0.0 - стоять на месте)
+float userTargetVelocity = 5.0f; // ЗАДАВАЙ СЮДА СКОРОСТЬ (0.0 - стоять на месте)
 // ------------------------
 
 #define WARMUP_DELAY_US (7000000UL)
