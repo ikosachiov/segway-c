@@ -43,12 +43,15 @@
 #define VELOCITY_Kd  0.00001
 #define VELOCITY_Ki  0.000004
 
-// --- КОНТРОЛЬ ПОЗИЦИИ ---
+// --- КОНТРОЛЬ ПОЗИЦИИ И УПРАВЛЕНИЯ ---
 #define POSITION_Kp  0.5  // Коэффициент удержания пути
 
 float position = 0.0f;           // Текущий пройденный путь 
 float targetPosition = 0.0f;     // Целевой путь
-float userTargetVelocity = 5.0f; // ЗАДАВАЙ СЮДА СКОРОСТЬ (0.0 - стоять на месте)
+
+// Делаем переменные volatile, чтобы безопасно менять их из другого таска
+volatile float userTargetVelocity = 0.0f; // ЗАДАВАЙ СЮДА СКОРОСТЬ (0.0 - стоять на месте)
+volatile float userTargetSteering = 0.0f; // ЗАДАВАЙ СЮДА ПОВОРОТ (0.0 - ехать прямо)
 // ------------------------
 
 #define WARMUP_DELAY_US (7000000UL)
@@ -134,8 +137,6 @@ void logIMU() {
   static unsigned long lastTimestamp = millis();
   unsigned long now = millis();
   if (now - lastTimestamp > LOG_MS) {
-    // Serial.print("p:"); 
-    // Serial.println(pitch);   
     lastTimestamp = now;
   }
   #endif
@@ -158,7 +159,6 @@ void IRAM_ATTR onTimer() {
 }
 
 float normalizeAngle(float value) { 
-  // DMP output via dmpGetYawPitchRoll is already in Radians (-PI to PI)
   return value;
 }
 
@@ -169,7 +169,7 @@ void setupBalancing(void) {
   Wire.begin();
   Wire.setClock(1000000UL);
 
-  Serial.println("Start");
+  Serial.println("Start Balancing Task");
   initTimerInterrupt();
   initIMU();
 
@@ -199,9 +199,9 @@ void updateVelocity(unsigned long nowMicros) {
   position += velocity * dt;                  
   targetPosition += userTargetVelocity * dt;  
 
-  // Drive both wheels together to move straight in response to the lean
-  leftStepper.setVelocity(-velocity);
-  rightStepper.setVelocity(velocity); 
+  // Микшируем скорость вперед-назад и руление (steering) влево-вправо
+  leftStepper.setVelocity(-velocity - userTargetSteering);
+  rightStepper.setVelocity(velocity - userTargetSteering); 
   
   timestamp = nowMicros;
 }
@@ -237,11 +237,10 @@ void updateControl(unsigned long nowMicros) {
   }
 
   if (nowMicros < WARMUP_DELAY_US) {    
-    // Keeping system components completely cleared during filter stabilization
     accel = 0.0f;
     velocity = 0.0f;
-    position = 0.0f;       // Сброс позиции при прогреве
-    targetPosition = 0.0f; // Сброс цели при прогреве
+    position = 0.0f;       
+    targetPosition = 0.0f; 
     leftStepper.setVelocity(0.0f);
     rightStepper.setVelocity(0.0f);
     return;
@@ -259,15 +258,14 @@ void updateControl(unsigned long nowMicros) {
     setBalancing(false);
     accel = 0.0f;
     velocity = 0.0f;    
-    position = 0.0f;       // Сброс позиции при падении
-    targetPosition = 0.0f; // Сброс цели при падении
+    position = 0.0f;       
+    targetPosition = 0.0f; 
   }
 
   if (!isBalancing) {
     return;
   }
   
-  // Вычисляем требуемую скорость для удержания/достижения позиции
   float posError = targetPosition - position; 
   float requiredVelocity = userTargetVelocity + (posError * POSITION_Kp);
   
@@ -288,13 +286,13 @@ void log(unsigned long nowMicros) {
     return;
   }
   Serial.print("yaw:");     Serial.print(yaw, 2);
-  Serial.print("\tpitch:");   Serial.print(pitch, 2);
-  Serial.print("\troll:");    Serial.print(roll, 2);
+  Serial.print("\tpitch:"); Serial.print(pitch, 2);
+  Serial.print("\troll:");  Serial.print(roll, 2);
 
-  Serial.print("\ta0:");     Serial.print(targetAngle, 4);
-  Serial.print("\ta:");    Serial.print(angle, 4);
-  Serial.print("\tv:");    Serial.print(velocity, 4);
-  Serial.print("\tu:");    Serial.println(accel, 4);  
+  Serial.print("\ta0:");    Serial.print(targetAngle, 4);
+  Serial.print("\ta:");     Serial.print(angle, 4);
+  Serial.print("\tv:");     Serial.print(velocity, 4);
+  Serial.print("\tu:");     Serial.println(accel, 4);  
   timestamp = nowMicros;   
 }
 
@@ -302,7 +300,6 @@ void taskBalancing(void *pvParameters) {
     vTaskDelay(pdMS_TO_TICKS(500));
     setupBalancing();
     
-    // Track execution rate to prevent background starvation
     TickType_t xLastWakeTime = xTaskGetTickCount();
     
     for(;;) {
@@ -313,11 +310,11 @@ void taskBalancing(void *pvParameters) {
         logIMU();
         
         #ifdef LOG_ENABLED
-        log(nowMicros);
+        // Выключил постоянный лог, чтобы не мешать логам дальномера, 
+        // но можешь раскомментировать при необходимости:
+        // log(nowMicros);
         #endif
 
-        // Yield execution to other tasks for exactly 1 FreeRTOS tick (typically 1ms)
-        // This stops the ESP32 Watchdog Timer from triggering a crash.
         vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(1));
     }
 }
