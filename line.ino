@@ -1,87 +1,66 @@
 #include <Wire.h>
-#include "Adafruit_VL53L0X.h"
+#include "pid.h" // Используем встроенный класс PID
+
+// === НАСТРОЙКИ ДАТЧИКОВ И ПИНОВ ===
+const int pinLineLeft = 34;   // Укажи свои аналоговые пины (например, ADC1 пины ESP32)
+const int pinLineRight = 35;
+
+// === КОЭФФИЦИЕНТЫ ПИД-РЕГУЛЯТОРА ЛИНИИ ===
+const float LINE_Kp = 0.05f;  // Пропорциональный коэффициент (начни с малого: 0.05 - 0.2)
+const float LINE_Kd = 0.01f;  // Дифференциальный коэффициент (гасит раскачку)
+const float LINE_Ki = 0.00f;  // Интегральный коэффициент (для линии обычно не нужен)
+
+// === МАРШЕВАЯ СКОРОСТЬ ===
+const float BASE_VELOCITY = 5.0f; // Базовая скорость робота вперед по линии
 
 // Подключаем переменные управления из balancing.ino
 extern volatile float userTargetVelocity;
 extern volatile float userTargetSteering;
-
-// Define custom ESP32 pins
-const int sdaPin = 18;
-const int sclPin = 19;
-
-// Create the Adafruit sensor instance
-Adafruit_VL53L0X lox = Adafruit_VL53L0X();
+extern volatile float userLineSteering; // Новая общая переменная для руления по линии
 
 void setupLine() {
-  vTaskDelay(pdMS_TO_TICKS(500));
-  
-  // Если Serial уже инициализирован в setupBalancing, эту строку можно оставить для надежности, 
-  // но лучше следить чтобы оба таска не инитили его одновременно.
   Serial.begin(115200);
-  while (!Serial) { delay(1); } // Wait for serial monitor
+  pinMode(pinLineLeft, INPUT);
+  pinMode(pinLineRight, INPUT);
 
-  Serial.println("\n--- Adafruit VL53L0X ESP32 Test ---");
-
-  // 1. Initialize ESP32 hardware I2C with your exact target pins 18 and 19
-  bool i2cInitSuccess = Wire1.begin(sdaPin, sclPin, 100000);
-  if (!i2cInitSuccess) {
-    Serial.println("Error: Failed to configure ESP32 hardware I2C bus configuration.");
-    while (1);
-  }
-
-  // 2. Pass the custom configured Wire reference directly into the Adafruit begin method
-  if (!lox.begin(0x29, false, &Wire1)) {
-    Serial.println(F("Failed to boot VL53L0X sensor. Check your hardware connections."));
-    while (1); // Halt execution if sensor initialization fails
-  }
-
-  Serial.println(F("VL53L0X sensor successfully configured on Pins 18/19."));
+  Serial.println("Line Follower Task Initialized.");
 }
 
 void taskLine(void *pvParameters) {
- 
-  VL53L0X_RangingMeasurementData_t measure;
-  int distance = 0;
+  vTaskDelay(pdMS_TO_TICKS(500));
   setupLine();
 
+  // Инициализируем ПИД. Целевое значение (setpoint) = 0.0 (датчики должны давать одинаковые значения)
+  PID linePID(LINE_Kp, LINE_Kd, LINE_Ki, 0.0f);
+
+  unsigned long lastTime = millis();
+
   for(;;) {
-    lox.rangingTest(&measure, false);
-    
-    // Если статус измерения не равен 4 (фаза неудачна), то данные корректны
-    if (measure.RangeStatus != 4) {
-        distance = constrain(measure.RangeMilliMeter, 20, 2000);
-        
-        Serial.print("Distance: ");
-        Serial.print(distance);
-        Serial.println(" mm");
+    unsigned long now = millis();
+    float dt = (now - lastTime) * 0.001f;
+    if (dt <= 0.0f) dt = 0.001f;
+    lastTime = now;
 
-        // === ЛОГИКА ДВИЖЕНИЯ В ЗАВИСИМОСТИ ОТ РАССТОЯНИЯ ===
-        
-        if (distance > 400) {
-            // Препятствий нет -> едем прямо
-            userTargetVelocity = 10.0f;  // <-- Настрой значение скорости
-            userTargetSteering = 0.0f;    // Не поворачиваем
-        } 
-        else if (distance > 150) {
-            // Препятствие близко -> останавливаемся и поворачиваем на месте
-            userTargetVelocity = 0.0f; 
-            userTargetSteering = 5.0f;   // <-- Настрой скорость поворота
-        } 
-        else {
-            // Препятствие в упор -> сдаем назад
-            userTargetVelocity = -10.0f; // Отрицательная скорость
-            userTargetSteering = 0.0f;
-        }
+    // Читаем показания датчиков (0...4095 для ESP32)
+    int leftVal = analogRead(pinLineLeft);
+    int rightVal = analogRead(pinLineRight);
 
-    } else {
-        Serial.println("Distance: Out of range");
-        
-        // Потеряли объект / вне зоны видимости -> стоим на месте
-        userTargetVelocity = 0.0f;
-        userTargetSteering = 0.0f;
-    }
+    // Считаем ошибку (разницу между левым и правым датчиком)
+    // Если робот уходит с линии и поворачивает НЕ В ТУ сторону, поменяй их местами: (rightVal - leftVal)
+    float error = (float)(leftVal - rightVal);
 
-    // Задержка опроса дальномера (влияет на отзывчивость)
-    vTaskDelay(pdMS_TO_TICKS(50));  
+    // Расчет управляющего воздействия ПИД
+    float control = linePID.getControl(error, dt);
+
+    // Ограничиваем силу руления, чтобы робот не падал при резких поворотах
+    control = constrain(control, -8.0f, 8.0f);
+
+    // Передаем данные в систему балансировки
+    userTargetVelocity = BASE_VELOCITY; // Задаем движение вперед
+    userTargetSteering = 0.0f;          // Старый руль сбрасываем
+    userLineSteering = control;         // Передаем поправку от линии
+
+    // Высокая частота опроса важна для удержания линии (~50 Гц)
+    vTaskDelay(pdMS_TO_TICKS(20));
   }
 }

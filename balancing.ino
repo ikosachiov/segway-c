@@ -1,12 +1,8 @@
 /**
- * @author Sergey Royz (zjor.se@gmail.com) 
+ * @author Sergey Royz (zjor.se@gmail.com)
  * @version 0.3 (MPU6050 gravity & scaling fix) + Position Control
  * @date 2026-05-11
  */
-
-// The MPU 6050 is positioned so that the X-axis is directed backward,
-// the Y-axis is directed to the right, and the Z-axis is directed upward.
-// The positive direction of rotation along the axes is clockwise.
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -23,9 +19,9 @@
 #define PIN_MOTOR_RIGHT_DIR   33
 #define PIN_MOTOR_RIGHT_STEP  25
 
-#define PIN_MOTOR_LEFT_EN    0 // always en
-#define PIN_MOTOR_LEFT_DIR   27
-#define PIN_MOTOR_LEFT_STEP  26
+#define PIN_MOTOR_LEFT_EN     0 // always en
+#define PIN_MOTOR_LEFT_DIR    27
+#define PIN_MOTOR_LEFT_STEP   26
 
 #define PPR       1600
 
@@ -36,7 +32,7 @@
 
 #define MAX_ACCEL (200)
 #define ANGLE_Kp  800.0
-#define ANGLE_Kd  60.0 
+#define ANGLE_Kd  60.0
 #define ANGLE_Ki  0.0
 
 #define VELOCITY_Kp  0.001
@@ -44,14 +40,15 @@
 #define VELOCITY_Ki  0.000004
 
 // --- КОНТРОЛЬ ПОЗИЦИИ И УПРАВЛЕНИЯ ---
-#define POSITION_Kp  0.5  // Коэффициент удержания пути
+#define POSITION_Kp  0.5
 
-float position = 0.0f;           // Текущий пройденный путь 
-float targetPosition = 0.0f;     // Целевой путь
+float position = 0.0f;
+float targetPosition = 0.0f;
 
-// Делаем переменные volatile, чтобы безопасно менять их из другого таска
-volatile float userTargetVelocity = 0.0f; // ЗАДАВАЙ СЮДА СКОРОСТЬ (0.0 - стоять на месте)
-volatile float userTargetSteering = 0.0f; // ЗАДАВАЙ СЮДА ПОВОРОТ (0.0 - ехать прямо)
+// Переменные для связи между тасками
+volatile float userTargetVelocity = 0.0f;
+volatile float userTargetSteering = 0.0f;
+volatile float userLineSteering = 0.0f;   // <-- Добавлено для езды по линии
 // ------------------------
 
 #define WARMUP_DELAY_US (7000000UL)
@@ -73,14 +70,14 @@ Stepper rightStepper(PIN_MOTOR_RIGHT_EN, PIN_MOTOR_RIGHT_DIR, PIN_MOTOR_RIGHT_ST
 // MPU6050 objects
 MPU6050 mpu;
 volatile bool dmpDataReady = false;
-uint8_t devStatus;           
-uint8_t fifoBuffer[64];            
+uint8_t devStatus;
+uint8_t fifoBuffer[64];
 float roll, pitch, yaw;
 
 // DMP specific variables
-Quaternion q;           // [w, x, y, z]         quaternion container
-VectorFloat gravity;    // [x, y, z]            gravity vector
-float ypr[3];           // [yaw, pitch, roll]   Yaw/Pitch/Roll container
+Quaternion q;
+VectorFloat gravity;
+float ypr[3];
 
 void dmpISR() {
   dmpDataReady = true;
@@ -122,7 +119,7 @@ bool readIMU() {
       mpu.dmpGetQuaternion(&q, fifoBuffer);
       mpu.dmpGetGravity(&gravity, &q);
       mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
-      
+
       yaw   = ypr[0];
       pitch = ypr[1];
       roll  = ypr[2];
@@ -147,7 +144,7 @@ PID velocityPID(VELOCITY_Kp, VELOCITY_Kd, VELOCITY_Ki, 0.0);
 bool isBalancing = false;
 
 float accel = 0.0f;
-float velocity = 0.0f; 
+float velocity = 0.0f;
 float angle = 0.0f;
 float targetAngle = ANGLE_SET_POINT;
 
@@ -158,7 +155,7 @@ void IRAM_ATTR onTimer() {
   rightStepper.tick();
 }
 
-float normalizeAngle(float value) { 
+float normalizeAngle(float value) {
   return value;
 }
 
@@ -180,9 +177,9 @@ void setupBalancing(void) {
 }
 
 void initTimerInterrupt() {
-  timer = timerBegin(666667);                
+  timer = timerBegin(666667);
   timerAttachInterrupt(timer, &onTimer);
-  timerAlarm(timer, 5, true, 0);             
+  timerAlarm(timer, 5, true, 0);
   timerStart(timer);
 }
 
@@ -196,13 +193,15 @@ void updateVelocity(unsigned long nowMicros) {
   velocity += accel * dt;
 
   // Интегрируем путь для контроля позиции
-  position += velocity * dt;                  
-  targetPosition += userTargetVelocity * dt;  
+  position += velocity * dt;
+  targetPosition += userTargetVelocity * dt;
 
-  // Микшируем скорость вперед-назад и руление (steering) влево-вправо
-  leftStepper.setVelocity(-velocity - userTargetSteering);
-  rightStepper.setVelocity(velocity - userTargetSteering); 
-  
+  // Микшируем скорость балансировки, ручной поворот и ПИД линии.
+  // Так как левый мотор изначально инвертирован инженером (-velocity),
+  // прибавление userLineSteering к ОБОИМ моторам создает правильный разнонаправленный поворот.
+  leftStepper.setVelocity(-velocity - userTargetSteering + userLineSteering);
+  rightStepper.setVelocity(velocity - userTargetSteering + userLineSteering);
+
   timestamp = nowMicros;
 }
 
@@ -213,7 +212,7 @@ void setBalancing(bool balancing) {
     Serial.print("IsBalancing: ");
     Serial.println(isBalancing);
     #endif
-  }  
+  }
 }
 
 void setIMUWarmUpElapsed() {
@@ -236,15 +235,15 @@ void updateControl(unsigned long nowMicros) {
     return;
   }
 
-  if (nowMicros < WARMUP_DELAY_US) {    
+  if (nowMicros < WARMUP_DELAY_US) {
     accel = 0.0f;
     velocity = 0.0f;
-    position = 0.0f;       
-    targetPosition = 0.0f; 
+    position = 0.0f;
+    targetPosition = 0.0f;
     leftStepper.setVelocity(0.0f);
     rightStepper.setVelocity(0.0f);
     return;
-  } 
+  }
   setIMUWarmUpElapsed();
 
   angle = normalizeAngle(pitch);
@@ -257,19 +256,19 @@ void updateControl(unsigned long nowMicros) {
   if (abs(angle - targetAngle) > PI / 4) {
     setBalancing(false);
     accel = 0.0f;
-    velocity = 0.0f;    
-    position = 0.0f;       
-    targetPosition = 0.0f; 
+    velocity = 0.0f;
+    position = 0.0f;
+    targetPosition = 0.0f;
   }
 
   if (!isBalancing) {
     return;
   }
-  
-  float posError = targetPosition - position; 
+
+  float posError = targetPosition - position;
   float requiredVelocity = userTargetVelocity + (posError * POSITION_Kp);
-  
-  velocityPID.setTarget(requiredVelocity); 
+
+  velocityPID.setTarget(requiredVelocity);
 
   targetAngle = ANGLE_SET_POINT + velocityPID.getControl(velocity, dt);
   anglePID.setTarget(targetAngle);
@@ -280,8 +279,8 @@ void updateControl(unsigned long nowMicros) {
   timestamp = nowMicros;
 }
 
-void log(unsigned long nowMicros) {  
-  static unsigned long timestamp = micros();  
+void log(unsigned long nowMicros) {
+  static unsigned long timestamp = micros();
   if (nowMicros - timestamp < 100000) {
     return;
   }
@@ -292,29 +291,23 @@ void log(unsigned long nowMicros) {
   Serial.print("\ta0:");    Serial.print(targetAngle, 4);
   Serial.print("\ta:");     Serial.print(angle, 4);
   Serial.print("\tv:");     Serial.print(velocity, 4);
-  Serial.print("\tu:");     Serial.println(accel, 4);  
-  timestamp = nowMicros;   
+  Serial.print("\tu:");     Serial.println(accel, 4);
+  timestamp = nowMicros;
 }
 
 void taskBalancing(void *pvParameters) {
-    vTaskDelay(pdMS_TO_TICKS(500));
-    setupBalancing();
-    
-    TickType_t xLastWakeTime = xTaskGetTickCount();
-    
-    for(;;) {
-        unsigned long nowMicros = micros();
-        
-        updateVelocity(nowMicros);
-        updateControl(nowMicros);
-        logIMU();
-        
-        #ifdef LOG_ENABLED
-        // Выключил постоянный лог, чтобы не мешать логам дальномера, 
-        // но можешь раскомментировать при необходимости:
-        // log(nowMicros);
-        #endif
+  vTaskDelay(pdMS_TO_TICKS(500));
+  setupBalancing();
 
-        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(1));
-    }
+  TickType_t xLastWakeTime = xTaskGetTickCount();
+
+  for(;;) {
+    unsigned long nowMicros = micros();
+
+    updateVelocity(nowMicros);
+    updateControl(nowMicros);
+    logIMU();
+
+    vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(1));
+  }
 }
