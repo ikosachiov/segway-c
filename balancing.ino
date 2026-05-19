@@ -199,8 +199,8 @@ void updateVelocity(unsigned long nowMicros) {
   // Микшируем скорость балансировки, ручной поворот и ПИД линии.
   // Так как левый мотор изначально инвертирован инженером (-velocity),
   // прибавление userLineSteering к ОБОИМ моторам создает правильный разнонаправленный поворот.
-  leftStepper.setVelocity(-velocity - userTargetSteering + userLineSteering);
-  rightStepper.setVelocity(velocity - userTargetSteering + userLineSteering);
+  leftStepper.setVelocity(-velocity - userTargetSteering - userLineSteering);
+  rightStepper.setVelocity(velocity - userTargetSteering - userLineSteering);
 
   timestamp = nowMicros;
 }
